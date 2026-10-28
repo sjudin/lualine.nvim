@@ -334,12 +334,27 @@ local function should_ignore_focus(user_config, win)
   end
 end
 
-local refresh_event_queue = {
-  has_events = false,
-  statusline = {},
-  tabline = {},
-  winbar = {},
-}
+local refresh_event_queue = {}
+local refresh_pending = false
+local refresh_generation = 0
+local last_refresh = 0
+local refresh_checker
+
+local function schedule_refresh()
+  if refresh_pending or next(refresh_event_queue) == nil then
+    return
+  end
+  refresh_pending = true
+
+  local elapsed = (vim.loop.hrtime() - last_refresh) / 1000000
+  local delay = math.ceil(config.options.refresh.refresh_time - elapsed)
+  if delay > 0 then
+    -- Only arm a timer when there is work waiting for the next frame.
+    vim.loop.timer_start(timers.refresh_check_timer, delay, 0, refresh_checker)
+  else
+    refresh_checker()
+  end
+end
 
 ---@alias LualineRefreshOptsKind
 ---| 'all'
@@ -369,9 +384,9 @@ local function refresh(opts)
 
   if not opts.queued and not opts.force then
     for _, place in ipairs(opts.place) do
-      refresh_event_queue['has_events'] = true
       refresh_event_queue[place] = vim.tbl_extend('force', opts, { place = { place }, queued = true })
     end
+    schedule_refresh()
     return
   end
 
@@ -498,33 +513,30 @@ local function set_tabline(hide)
 end
 
 local function check_refresh()
-  if not refresh_event_queue.has_events then
-    return
-  end
-  refresh_event_queue.has_events = nil
-
-  for place, refresh_cmd in pairs(refresh_event_queue) do
-    if type(refresh_cmd) == 'table' and refresh_cmd.queued == true then
-      refresh(refresh_cmd)
-      refresh_event_queue[place] = {}
-    end
+  -- Requests made by components during a refresh belong to the next batch.
+  local queue = refresh_event_queue
+  refresh_event_queue = {}
+  for _, refresh_cmd in pairs(queue) do
+    refresh(refresh_cmd)
   end
 end
 
 local function set_refresh_checker()
   vim.loop.timer_stop(timers.refresh_check_timer)
-  vim.loop.timer_start(
-    timers.refresh_check_timer,
-    0,
-    config.options.refresh.refresh_time,
-    modules.utils.timer_call(
-      timers.refresh_check_timer,
-      'lualine_refresh_check',
-      check_refresh,
-      3,
-      'lualine: Failed to refresh statusline'
-    )
-  )
+  refresh_generation = refresh_generation + 1
+  local generation = refresh_generation
+  refresh_pending = false
+  last_refresh = 0
+  refresh_event_queue = {}
+  refresh_checker = modules.utils.timer_call(timers.refresh_check_timer, 'lualine_refresh_check', function()
+    -- setup() may have replaced the configuration while this was scheduled.
+    if generation ~= refresh_generation then
+      return
+    end
+    refresh_pending = false
+    last_refresh = vim.loop.hrtime()
+    check_refresh()
+  end, 3, 'lualine: Failed to refresh statusline')
 end
 
 --- Sets &statusline option to lualine
@@ -684,6 +696,7 @@ local function setup(user_config)
   end
   if verify_nvim_version() then
     config = modules.config_module.apply_configuration(user_config)
+    set_refresh_checker()
     vim.cmd([[augroup lualine | exe "autocmd!" | augroup END]])
     setup_theme()
     -- load components & extensions
@@ -691,7 +704,6 @@ local function setup(user_config)
     set_statusline()
     set_tabline()
     set_winbar()
-    set_refresh_checker()
   end
   if package.loaded['lualine.utils.notices'] then
     modules.utils_notices.notice_message_startup()

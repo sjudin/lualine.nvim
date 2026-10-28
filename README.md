@@ -421,7 +421,7 @@ options = {
     tabline = 100,            -- to maintain between refresh. It's not guarantied if situation
     winbar = 100              -- arises that lualine needs to refresh itself before this time
                               -- it'll do it.
-    refresh_time = 16,        -- ~60fps the time after which refresh queue is processed. Mininum refreshtime for lualine
+    refresh_time = 16,        -- ~60fps minimum interval between queued refreshes; no polling while idle
     events = {                -- The auto command events at which lualine refreshes
       'WinEnter',
       'BufEnter',
@@ -1050,10 +1050,15 @@ So you can simply do
 require('lualine').refresh()
 ```
 
-Also, note by default when you call refresh a refresh event is queued in lualine.
-It desn't refresh event immidiately. It'll refresh on next refresh check pass.
-By default this time is set to 16ms to match 60fps. This duration can be configured
-with `options.refresh.refresh_time` option. If you want to bypass the refresh queue
+By default, calling refresh queues a request and schedules it for the next event-loop
+turn. Multiple requests are combined so each requested segment is refreshed once per
+batch. While events keep arriving, `options.refresh.refresh_time` limits how often
+batches are processed (16ms by default, approximately 60fps). A one-shot timer waits
+out any remaining interval; the queue is not polled while idle. The first request
+after an idle period does not wait for this interval. The periodic `statusline`,
+`tabline`, and `winbar` timers still request updates for components without events.
+
+If you want to bypass the refresh queue
 and want lualine to process the refresh immmidiately call refresh with `force=true`
 parameter set like this.
 ```lua
